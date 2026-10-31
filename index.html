@@ -256,7 +256,15 @@ window.addEventListener('error',e=>dlog('ERROR página: '+e.message));
 window.addEventListener('unhandledrejection',e=>dlog('ERROR promesa: '+(e.reason&&e.reason.message||e.reason)));
 
 const SIG_URL=window.M5_SIG||'wss://0.peerjs.com/peerjs?key=peerjs';
-const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}]};
+/* TURN: retransmite el audio cuando la conexión directa es imposible (redes distintas, datos móviles…).
+   Pega aquí TUS credenciales (gratis: metered.ca → Open Relay, 20 GB/mes). Ejemplo:
+   const MY_TURN=[{urls:'stun:stun.relay.metered.ca:80'},{urls:['turn:standard.relay.metered.ca:80','turn:standard.relay.metered.ca:443','turns:standard.relay.metered.ca:443?transport=tcp'],username:'TU_USUARIO',credential:'TU_CLAVE'}]; */
+const MY_TURN=[{urls:'stun:stun.relay.metered.ca:80'},
+  {urls:['turn:standard.relay.metered.ca:80','turn:standard.relay.metered.ca:80?transport=tcp','turn:standard.relay.metered.ca:443','turns:standard.relay.metered.ca:443?transport=tcp'],username:'e953525d7ea5851f0e224247',credential:'yLmdYE0u4vf9wGez'},
+  {urls:['turn:global.relay.metered.ca:80','turn:global.relay.metered.ca:80?transport=tcp','turn:global.relay.metered.ca:443','turns:global.relay.metered.ca:443?transport=tcp'],username:'e953525d7ea5851f0e224247',credential:'yLmdYE0u4vf9wGez'}];
+const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'},...MY_TURN,
+  /* TURN público de respaldo (puede no funcionar; usa el tuyo en MY_TURN) */
+  {urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turns:openrelay.metered.ca:443?transport=tcp'],username:'openrelayproject',credential:'openrelayproject'}]};
 const PFX='m5j-';
 
 const me={name:'',host:false};
@@ -531,28 +539,129 @@ $('leave').onclick=()=>leaveRoom();
 $('share').onclick=async()=>{try{await navigator.clipboard.writeText(S.code);toast('Código copiado: '+S.code)}catch(e){toast('Código: '+S.code)}};
 
 /* ---------- Archivos locales (solo anfitrión) ---------- */
-function readTags(file){
-  /* ID3v2 mínimo (TIT2, TPE1, APIC) para mostrar título, artista y portada como en M5 Music */
-  return file.slice(0,1<<20).arrayBuffer().then(buf=>{
-    const d=new DataView(buf),u=new Uint8Array(buf),out={};
-    if(u[0]!==0x49||u[1]!==0x44||u[2]!==0x33)return out;
-    const ver=u[3];let size=((u[6]&127)<<21)|((u[7]&127)<<14)|((u[8]&127)<<7)|(u[9]&127);
-    let p=10;const end=Math.min(10+size,buf.byteLength);
-    const dec=(a,enc)=>{const dd=new TextDecoder(enc===1?'utf-16':enc===2?'utf-16be':enc===3?'utf-8':'iso-8859-1');return dd.decode(a).replace(/\0+$/,'')};
-    while(p+10<end){
-      const id=String.fromCharCode(u[p],u[p+1],u[p+2],u[p+3]);if(!/^[A-Z0-9]{4}$/.test(id))break;
-      const sz=ver===4?((u[p+4]&127)<<21)|((u[p+5]&127)<<14)|((u[p+6]&127)<<7)|(u[p+7]&127):d.getUint32(p+4);
-      const f=u.subarray(p+10,p+10+sz);p+=10+sz;if(!sz)break;
-      if(id==='TIT2')out.title=dec(f.subarray(1),f[0]);
-      else if(id==='TPE1')out.artist=dec(f.subarray(1),f[0]);
-      else if(id==='APIC'){
-        const enc=f[0];let i=1;while(f[i])i++;const mime=dec(f.subarray(1,i),0);i+=2;
-        if(enc===1||enc===2){while(!(f[i]===0&&f[i+1]===0))i+=2;i+=2}else{while(f[i])i++;i++}
-        out.cover=URL.createObjectURL(new Blob([f.subarray(i)],{type:mime.includes('/')?mime:'image/jpeg'}));
+/* Lector de etiquetas: MP3 (ID3v2.2/2.3/2.4 e ID3v1), M4A/MP4 (iTunes), FLAC y OGG (Vorbis/Opus) */
+const txt=(a,enc)=>new TextDecoder(enc||'utf-8').decode(a).split('\0')[0];
+const blobURL=(a,mime)=>URL.createObjectURL(new Blob([a],{type:mime}));
+const imgMime=a=>a[0]===0x89&&a[1]===0x50?'image/png':a[0]===0xFF&&a[1]===0xD8?'image/jpeg':a[0]===0x47?'image/gif':a[0]===0x52?'image/webp':'image/jpeg';
+function id3(buf){
+  const u=new Uint8Array(buf),out={},ver=u[3];
+  const ss=(a,i)=>((a[i]&127)<<21)|((a[i+1]&127)<<14)|((a[i+2]&127)<<7)|(a[i+3]&127);
+  const end=Math.min(10+ss(u,6),u.length);let p=10;
+  if(u[5]&0x40)p+=ver===4?ss(u,10):(u[10]*16777216+(u[11]<<16)+(u[12]<<8)+u[13]+4);
+  const dec=(a,enc)=>txt(a,enc===1?(a[0]===0xFE&&a[1]===0xFF?'utf-16be':'utf-16'):enc===2?'utf-16be':enc===3?'utf-8':'iso-8859-1');
+  const hl=ver===2?6:10;
+  while(p+hl<=end){
+    let id,sz;
+    if(ver===2){id=String.fromCharCode(u[p],u[p+1],u[p+2]);sz=(u[p+3]<<16)|(u[p+4]<<8)|u[p+5]}
+    else{id=String.fromCharCode(u[p],u[p+1],u[p+2],u[p+3]);sz=ver===4?ss(u,p+4):(u[p+4]*16777216+(u[p+5]<<16)+(u[p+6]<<8)+u[p+7])}
+    if(!/^[A-Z0-9]{3,4}$/.test(id)||!sz)break;
+    const f=u.subarray(p+hl,p+hl+sz);p+=hl+sz;
+    if(id==='TIT2'||id==='TT2')out.title=dec(f.subarray(1),f[0]);
+    else if(id==='TPE1'||id==='TP1')out.artist=dec(f.subarray(1),f[0]);
+    else if((id==='APIC'||id==='PIC')&&!out.cover){
+      const enc=f[0];let i=1;
+      if(ver===2)i=4;else{while(i<f.length&&f[i])i++;i++}
+      i++; /* tipo de imagen */
+      if(enc===1||enc===2){while(i+1<f.length&&!(f[i]===0&&f[i+1]===0))i+=2;i+=2}else{while(i<f.length&&f[i])i++;i++}
+      if(i<f.length)out.cover=blobURL(f.subarray(i),imgMime(f.subarray(i)));
+    }
+  }
+  return out;
+}
+function vorbis(b,out){
+  const d=new DataView(b.buffer,b.byteOffset,b.byteLength);let i=0;
+  i+=4+d.getUint32(i,true);const n=d.getUint32(i,true);i+=4;
+  for(let k=0;k<n&&i+4<=b.length;k++){
+    const l=d.getUint32(i,true);i+=4;const s=txt(b.subarray(i,i+l));i+=l;
+    const e=s.indexOf('=');if(e<0)continue;const key=s.slice(0,e).toUpperCase(),val=s.slice(e+1);
+    if(key==='TITLE')out.title=val;else if(key==='ARTIST')out.artist=val;
+    else if(key==='METADATA_BLOCK_PICTURE'&&!out.cover){try{const raw=Uint8Array.from(atob(val),c=>c.charCodeAt(0));out.cover=pic(raw)}catch(x){}}
+  }
+}
+function pic(b){ /* bloque PICTURE de FLAC */
+  const d=new DataView(b.buffer,b.byteOffset,b.byteLength);let i=4;i+=4+d.getUint32(i);i+=4+d.getUint32(i)+16;const n=d.getUint32(i);i+=4;
+  const img=b.subarray(i,i+n);return img.length?blobURL(img,imgMime(img)):'';
+}
+function flac(buf){
+  const u=new Uint8Array(buf),out={};let p=4;
+  while(p+4<=u.length){
+    const last=u[p]&128,type=u[p]&127,len=(u[p+1]<<16)|(u[p+2]<<8)|u[p+3];p+=4;
+    const b=u.subarray(p,p+len);
+    try{if(type===4)vorbis(b,out);else if(type===6&&!out.cover)out.cover=pic(b)}catch(e){}
+    p+=len;if(last)break;
+  }
+  return out;
+}
+function ogg(buf){
+  const u=new Uint8Array(buf);let p=0;const parts=[];
+  while(p+27<=u.length&&u[p]===0x4F&&u[p+1]===0x67){
+    const ns=u[p+26];let len=0;for(let i=0;i<ns;i++)len+=u[p+27+i];
+    const st=p+27+ns;parts.push(u.subarray(st,st+len));p=st+len;
+  }
+  let tot=0;parts.forEach(a=>tot+=a.length);const all=new Uint8Array(tot);let o=0;parts.forEach(a=>{all.set(a,o);o+=a.length});
+  const find=s=>{const b=[...s].map(c=>c.charCodeAt(0));outer:for(let i=0;i<all.length-b.length;i++){for(let j=0;j<b.length;j++)if(all[i+j]!==b[j])continue outer;return i}return -1};
+  const out={};let i=find('OpusTags'),h=8;if(i<0){i=find('\x03vorbis');h=7}
+  if(i>=0)try{vorbis(all.subarray(i+h),out)}catch(e){}
+  return out;
+}
+function mp4atoms(u,out,path){
+  const dv=new DataView(u.buffer,u.byteOffset,u.byteLength);let p=0;
+  while(p+8<=u.length){
+    const sz=dv.getUint32(p),t=String.fromCharCode(u[p+4],u[p+5],u[p+6],u[p+7]);
+    if(sz<8||p+sz>u.length)break;
+    const body=u.subarray(p+8,p+sz);
+    if(t==='udta'||t==='ilst')mp4atoms(body,out,t);
+    else if(t==='meta')mp4atoms(body.subarray(4),out,t);
+    else if(path==='ilst'){
+      const key=t==='\xa9nam'?'title':(t==='\xa9ART'||t==='aART')?'artist':t==='covr'?'cover':'';
+      if(key){
+        const bd=new DataView(body.buffer,body.byteOffset,body.byteLength);let q=0;
+        while(q+16<=body.length){
+          const ds=bd.getUint32(q);
+          if(String.fromCharCode(body[q+4],body[q+5],body[q+6],body[q+7])==='data'){
+            const val=body.subarray(q+16,q+ds);
+            if(key==='cover'){if(!out.cover&&val.length)out.cover=blobURL(val,imgMime(val))}
+            else if(!(t==='aART'&&out.artist))out[key]=txt(val);
+            break;
+          }
+          if(ds<8)break;q+=ds;
+        }
       }
     }
+    p+=sz;
+  }
+}
+async function mp4(file){
+  const out={},rd=async(a,b)=>new Uint8Array(await file.slice(a,b).arrayBuffer());
+  let p=0;
+  while(p+8<=file.size){
+    const h=await rd(p,p+16),dv=new DataView(h.buffer);
+    let sz=dv.getUint32(0),hs=8;const t=String.fromCharCode(h[4],h[5],h[6],h[7]);
+    if(sz===1){sz=Number(dv.getBigUint64(8));hs=16}else if(sz===0)sz=file.size-p;
+    if(sz<8)break;
+    if(t==='moov'){if(sz<=(64<<20))mp4atoms(await rd(p+hs,p+sz),out,'');break}
+    p+=sz;
+  }
+  return out;
+}
+async function readTags(file){
+  try{
+    const head=new Uint8Array(await file.slice(0,12).arrayBuffer());
+    const s4=String.fromCharCode(...head.subarray(0,4)),s48=String.fromCharCode(...head.subarray(4,8));
+    let out={};
+    if(s4.slice(0,3)==='ID3'){
+      const sz=((head[6]&127)<<21)|((head[7]&127)<<14)|((head[8]&127)<<7)|(head[9]&127);
+      out=id3(await file.slice(0,Math.min(10+sz,24<<20)).arrayBuffer());
+    }else if(s4==='fLaC')out=flac(await file.slice(0,24<<20).arrayBuffer());
+    else if(s4==='OggS')out=ogg(await file.slice(0,6<<20).arrayBuffer());
+    else if(s48==='ftyp')out=await mp4(file);
+    if(!out.title&&file.size>128){
+      const t=new Uint8Array(await file.slice(file.size-128).arrayBuffer());
+      if(t[0]===84&&t[1]===65&&t[2]===71){const l=a=>txt(a,'iso-8859-1').trim();out.title=l(t.subarray(3,33))||undefined;out.artist=out.artist||l(t.subarray(33,63))||undefined}
+    }
+    dlog('etiquetas de '+file.name+': '+(out.title?'título ✓':'sin título')+' · '+(out.artist?'artista ✓':'sin artista')+' · '+(out.cover?'portada ✓':'sin portada')+' ['+(s48==='ftyp'?'mp4/m4a':s4.replace(/[^\x20-\x7e]/g,'?'))+']');
     return out;
-  }).catch(()=>({}));
+  }catch(e){dlog('etiquetas: error '+(e&&e.message||e));return {}}
 }
 function durOf(file){
   return new Promise(res=>{const a=new Audio(),u=URL.createObjectURL(file);a.preload='metadata';a.src=u;a.onloadedmetadata=()=>{res(a.duration||0);URL.revokeObjectURL(u)};a.onerror=()=>{res(0);URL.revokeObjectURL(u)}});
@@ -670,7 +779,7 @@ $('ppl').onclick=()=>openSheet('pSheet');
 $('scrim').onclick=closeSheets;
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeSheets);
 /* ---------- Conexión manual: sin servicio de salas, se intercambian dos códigos a mano ---------- */
-const gathered=pc=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();const f=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',f);r()}};pc.addEventListener('icegatheringstatechange',f);setTimeout(r,5000)});
+const gathered=pc=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();const f=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',f);r()}};pc.addEventListener('icegatheringstatechange',f);setTimeout(r,8000)}).then(()=>{const d=(pc.localDescription&&pc.localDescription.sdp)||'',c=t=>(d.match(new RegExp('typ '+t,'g'))||[]).length;dlog('ICE reunido · host: '+c('host')+' · srflx: '+c('srflx')+' · relay: '+c('relay'))});
 const M={go:null};
 function manShow(t,h,lab,go){$('manT').textContent=t;$('manP').innerHTML=h;$('manGo').textContent=lab;$('manGo').disabled=false;$('manOut').value='';$('manIn').value='';M.go=go;$('man').hidden=false}
 $('manGo').onclick=()=>M.go&&M.go();
