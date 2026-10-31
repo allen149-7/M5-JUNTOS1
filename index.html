@@ -354,7 +354,10 @@ $('dbgCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('dbgT')
 window.addEventListener('error',e=>dlog('ERROR página: '+e.message));
 window.addEventListener('unhandledrejection',e=>dlog('ERROR promesa: '+(e.reason&&e.reason.message||e.reason)));
 
-const SIG_URL=window.M5_SIG||'wss://0.peerjs.com/peerjs?key=peerjs';
+/* Servidor de señalización. El público (0.peerjs.com) cierra las conexiones; usa el tuyo (carpeta signal-server) y pega aquí su dirección, por ejemplo:
+   const MY_SIGNAL='wss://m5-signal.onrender.com/peerjs?key=peerjs'; */
+const MY_SIGNAL='';
+const SIG_URL=window.M5_SIG||MY_SIGNAL||'wss://0.peerjs.com/peerjs?key=peerjs';
 /* TURN: retransmite el audio cuando la conexión directa es imposible (redes distintas, datos móviles…).
    Pega aquí TUS credenciales (gratis: metered.ca → Open Relay, 20 GB/mes). Ejemplo:
    const MY_TURN=[{urls:'stun:stun.relay.metered.ca:80'},{urls:['turn:standard.relay.metered.ca:80','turn:standard.relay.metered.ca:443','turns:standard.relay.metered.ca:443?transport=tcp'],username:'TU_USUARIO',credential:'TU_CLAVE'}]; */
