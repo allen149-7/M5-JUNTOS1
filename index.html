@@ -292,7 +292,7 @@ input[type=range]:disabled{opacity:.45;cursor:default}
   <input type="file" id="file" accept="audio/*,.mp3,.flac,.wav,.m4a,.ogg,.lrc" multiple hidden>
 </div>
 
-<div id="dbg" hidden><h3>Diagnóstico de conexión</h3><pre id="dbgT"></pre><div class="row"><button class="btn pri" id="dbgCopy">Copiar</button><button class="btn" id="dbgX">Cerrar</button></div></div>
+<div id="dbg" hidden><h3>Diagnóstico de conexión</h3><pre id="dbgT"></pre><div class="row"><button class="btn pri" id="dbgCopy">Copiar</button><button class="btn" id="dbgProbe">Probar servicio</button><button class="btn" id="dbgX">Cerrar</button></div></div>
 <div id="man" hidden><h3 id="manT"></h3><div class="note" id="manP"></div>
   <label for="manOut" style="font-size:12px;color:var(--fg2)">MI CÓDIGO</label><textarea class="inp" id="manOut" rows="5" readonly></textarea>
   <div class="row"><button class="btn" id="manCopy">Copiar mi código</button></div>
@@ -327,6 +327,29 @@ function showDbg(){
 }
 $('dbgOpen1').onclick=$('dbgOpen2').onclick=showDbg;
 $('dbgX').onclick=()=>$('dbg').hidden=true;
+/* Prueba autónoma del servicio de salas: dos conectados de mentira se mandan una solicitud entre sí y se mide qué hace el servicio */
+$('dbgProbe').onclick=async()=>{
+  const btn=$('dbgProbe');if(btn.disabled)return;btn.disabled=true;btn.textContent='Probando… (~12 s)';
+  const say=m=>dlog('PRUEBA: '+m),idA='m5t-'+rand()+rand();
+  let A=null,B=null,bClosed=false;const gotA=[],gotB=[];
+  const openB=async()=>{bClosed=false;B=await sigOpen('m5t-'+rand()+rand(),m=>gotB.push(m.type),()=>{bClosed=true})};
+  try{
+    say('inicio');
+    A=await sigOpen(idA,m=>gotA.push(m.type),()=>say('el destino de prueba se cerró'));
+    await openB();
+    B.send('OFFER',idA,{sdp:'prueba'});await sleep(2000);
+    say('1) solicitud simple a un destino conectado: '+(gotA.includes('OFFER')?'ENTREGADA':'NO llegó')+' · emisor '+(bClosed?'CERRADO por el servicio':'sigue abierto'));
+    if(bClosed)await openB();gotA.length=0;
+    B.send('OFFER',idA,{sdp:{type:'offer',sdp:'v=0'},type:'data',connectionId:'dc_prueba',reliable:true,serialization:'json',browser:'chrome'});await sleep(2000);
+    say('2) solicitud con formato PeerJS completo: '+(gotA.includes('OFFER')?'ENTREGADA':'NO llegó')+' · emisor '+(bClosed?'CERRADO por el servicio':'sigue abierto'));
+    if(bClosed)await openB();gotB.length=0;
+    B.send('OFFER','m5t-noexiste'+rand(),{sdp:'prueba'});await sleep(7000);
+    say('3) destino que no existe: emisor '+(bClosed?'CERRADO por el servicio':'sigue abierto')+' · aviso EXPIRE: '+(gotB.includes('EXPIRE')?'sí':'no'));
+    say('fin');
+  }catch(e){say('no se pudo completar ('+(e&&e.message||e)+')')}
+  try{A&&A.close()}catch(e){}try{B&&B.close()}catch(e){}
+  btn.disabled=false;btn.textContent='Probar servicio';showDbg();
+};
 $('dbgCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('dbgT').textContent);toast('Copiado')}catch(e){const r=document.createRange();r.selectNodeContents($('dbgT'));const g=getSelection();g.removeAllRanges();g.addRange(r);toast('Selecciona y copia el texto')}};
 window.addEventListener('error',e=>dlog('ERROR página: '+e.message));
 window.addEventListener('unhandledrejection',e=>dlog('ERROR promesa: '+(e.reason&&e.reason.message||e.reason)));
