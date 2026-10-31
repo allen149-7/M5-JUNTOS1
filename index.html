@@ -231,7 +231,7 @@ input[type=range]:disabled{opacity:.45;cursor:default}
     <button class="dbgl" id="dbgOpen2" style="margin:0 auto 18px">Ver diagnóstico de conexión</button>
   </div>
 
-  <input type="file" id="file" accept="audio/*,.mp3,.flac,.wav,.m4a,.ogg" multiple hidden>
+  <input type="file" id="file" accept="audio/*,.mp3,.flac,.wav,.m4a,.ogg,.lrc" multiple hidden>
 </div>
 
 <div id="dbg" hidden><h3>Diagnóstico de conexión</h3><pre id="dbgT"></pre><div class="row"><button class="btn pri" id="dbgCopy">Copiar</button><button class="btn" id="dbgX">Cerrar</button></div></div>
@@ -579,6 +579,11 @@ function id3(buf){
     const f=u.subarray(p+hl,p+hl+sz);p+=hl+sz;
     if(id==='TIT2'||id==='TT2')out.title=dec(f.subarray(1),f[0]);
     else if(id==='TPE1'||id==='TP1')out.artist=dec(f.subarray(1),f[0]);
+    else if((id==='USLT'||id==='ULT')&&!out.lyrics){
+      const enc=f[0];let i=4;
+      if(enc===1||enc===2){while(i+1<f.length&&!(f[i]===0&&f[i+1]===0))i+=2;i+=2}else{while(i<f.length&&f[i])i++;i++}
+      if(i<f.length)out.lyrics=dec(f.subarray(i),enc);
+    }
     else if((id==='APIC'||id==='PIC')&&!out.cover){
       const enc=f[0];let i=1;
       if(ver===2)i=4;else{while(i<f.length&&f[i])i++;i++}
@@ -596,6 +601,7 @@ function vorbis(b,out){
     const l=d.getUint32(i,true);i+=4;const s=txt(b.subarray(i,i+l));i+=l;
     const e=s.indexOf('=');if(e<0)continue;const key=s.slice(0,e).toUpperCase(),val=s.slice(e+1);
     if(key==='TITLE')out.title=val;else if(key==='ARTIST')out.artist=val;
+    else if(/^(UNSYNCED|SYNCED)?LYRICS$/.test(key)&&!out.lyrics)out.lyrics=val;
     else if(key==='METADATA_BLOCK_PICTURE'&&!out.cover){try{const raw=Uint8Array.from(atob(val),c=>c.charCodeAt(0));out.cover=pic(raw)}catch(x){}}
   }
 }
@@ -634,7 +640,7 @@ function mp4atoms(u,out,path){
     if(t==='udta'||t==='ilst')mp4atoms(body,out,t);
     else if(t==='meta')mp4atoms(body.subarray(4),out,t);
     else if(path==='ilst'){
-      const key=t==='\xa9nam'?'title':(t==='\xa9ART'||t==='aART')?'artist':t==='covr'?'cover':'';
+      const key=t==='\xa9nam'?'title':(t==='\xa9ART'||t==='aART')?'artist':t==='\xa9lyr'?'lyrics':t==='covr'?'cover':'';
       if(key){
         const bd=new DataView(body.buffer,body.byteOffset,body.byteLength);let q=0;
         while(q+16<=body.length){
@@ -680,7 +686,7 @@ async function readTags(file){
       const t=new Uint8Array(await file.slice(file.size-128).arrayBuffer());
       if(t[0]===84&&t[1]===65&&t[2]===71){const l=a=>txt(a,'iso-8859-1').trim();out.title=l(t.subarray(3,33))||undefined;out.artist=out.artist||l(t.subarray(33,63))||undefined}
     }
-    dlog('etiquetas de '+file.name+': '+(out.title?'título ✓':'sin título')+' · '+(out.artist?'artista ✓':'sin artista')+' · '+(out.cover?'portada ✓':'sin portada')+' ['+(s48==='ftyp'?'mp4/m4a':s4.replace(/[^\x20-\x7e]/g,'?'))+']');
+    dlog('etiquetas de '+file.name+': '+(out.title?'título ✓':'sin título')+' · '+(out.artist?'artista ✓':'sin artista')+' · '+(out.cover?'portada ✓':'sin portada')+(out.lyrics?' · letra ✓':'')+' ['+(s48==='ftyp'?'mp4/m4a':s4.replace(/[^\x20-\x7e]/g,'?'))+']');
     return out;
   }catch(e){dlog('etiquetas: error '+(e&&e.message||e));return {}}
 }
@@ -697,12 +703,21 @@ function shrink(src,px,q){
 }
 async function addFiles(files){
   if(!me.host)return;
-  const arr=[...files].filter(f=>/^audio\//.test(f.type)||/\.(mp3|flac|wav|m4a|ogg)$/i.test(f.name));
-  if(!arr.length)return toast('Elige archivos de audio');
+  const all=[...files],arr=all.filter(f=>/^audio\//.test(f.type)||/\.(mp3|flac|wav|m4a|ogg)$/i.test(f.name));
+  const lrcs=all.filter(f=>/\.lrc$/i.test(f.name)),bn=f=>f.name.replace(/\.[^.]+$/,'').toLowerCase();
+  const lrcMap=new Map(lrcs.map(f=>[bn(f),f]));
+  if(!arr.length){
+    if(!lrcs.length)return toast('Elige archivos de audio');
+    /* solo .lrc: se asocian por nombre a canciones que ya están en la lista */
+    let n=0;
+    for(const lf of lrcs){const b=bn(lf),x=S.queue.find(q=>q.base.toLowerCase()===b||lnorm(q.title)===lnorm(b));if(x){x.lrcText=await lf.text();n++;if(S.queue[S.cur]===x)lyrLoad(x)}}
+    return toast(n?n+(n===1?' letra añadida':' letras añadidas'):'Ningún .lrc coincide con una canción');
+  }
   for(const f of arr){
     const tg=await readTags(f),dur=await durOf(f);
     const base=f.name.replace(/\.[^.]+$/,'');
-    const t={id:rand(),title:tg.title||base,artist:tg.artist||'Artista desconocido',cover:tg.cover||'',dur,file:f,th:'',big:''};
+    const lf=lrcMap.get(base.toLowerCase());
+    const t={id:rand(),title:tg.title||base,artist:tg.artist||'Artista desconocido',cover:tg.cover||'',dur,file:f,th:'',big:'',base,lrcText:lf?await lf.text():(tg.lyrics||'')};
     if(tg.cover){t.th=await shrink(tg.cover,72,.6);t.big=await shrink(tg.cover,480,.72)}
     S.queue.push(t);
     if(t.th)bcast({t:'th',id:t.id,img:t.th});
@@ -899,7 +914,8 @@ async function pxSearch(s,dur){
   if(!hasP(s.title))songs.sort((a,b)=>hasP(a.trackName)-hasP(b.trackName));
   const c=lrcPick(songs.map(x=>({trackName:x.trackName,artistName:x.artistName,duration:(x.trackTimeMillis||0)/1000,syncedLyrics:'x',id:x.trackId})),s,dur);
   if(!c)return null;
-  r=await fetch('https://lyrics.paxsenix.org/apple-music/lyrics?'+new URLSearchParams({id:String(c.id),v:'2'}));
+  const lu='https://lyrics.paxsenix.org/apple-music/lyrics?'+new URLSearchParams({id:String(c.id),v:'2'});
+  for(let i=0;i<3;i++){r=await fetch(lu);if(![429,500,502,503,504].includes(r.status))break;if(i<2)await new Promise(z=>setTimeout(z,1500*(i+1)))}
   if(r.status===404)return null;
   if(!r.ok)throw new Error('http '+r.status);
   const txt=pxLrc(await r.json(),dur);
@@ -911,7 +927,8 @@ const lyrMsg=()=>({t:'lyr',...S.lyr});
 async function lyrLoad(t){
   S.lyr={id:t.id,wait:true};renderLyr();
   const k='m5jl:'+lnorm((t.title||'')+' '+(t.artist||''));let res=null;
-  try{const c=JSON.parse(localStorage.getItem(k)||'null');if(c&&(c.lines||Date.now()-c.miss<6048e5))res=c}catch(e){}
+  if(t.lrcText){try{const p=parseLrc(t.lrcText);if(p.lines&&p.lines.length){res=p;if(res.lines.length>300)res.lines.length=300;dlog('letras: del archivo ✓')}}catch(e){}}
+  if(!res)try{const c=JSON.parse(localStorage.getItem(k)||'null');if(c&&(c.lines||Date.now()-c.miss<6048e5))res=c}catch(e){}
   if(!res){
     let found=null,errs=0;
     for(const [nm,fn] of LYR_SRCS){
@@ -1000,10 +1017,12 @@ const isStandalone=matchMedia('(display-mode: standalone)').matches||navigator.s
 const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();instEv=e;if(!isStandalone)$('instBtn').style.display=''});
 window.addEventListener('appinstalled',()=>{$('instBtn').style.display='none';toast('App instalada')});
-if(isIOS&&!isStandalone)$('instBtn').style.display='';
+if(!isStandalone)$('instBtn').style.display='';   /* se muestra siempre; si el navegador no avisa, explica cómo hacerlo a mano */
 $('instBtn').onclick=async()=>{
   if(instEv){instEv.prompt();try{await instEv.userChoice}catch(e){}instEv=null;$('instBtn').style.display='none'}
   else if(isIOS)alert('En Safari: toca el botón Compartir (el cuadrado con la flecha) y elige «Añadir a pantalla de inicio».');
+  else if(/SamsungBrowser/i.test(navigator.userAgent))alert('En Samsung Internet: toca el menú (⋮ o ≡) y elige «Añadir página a» → «Pantalla de inicio».');
+  else alert('Abre el menú del navegador (⋮) y elige «Instalar app» o «Añadir a pantalla de inicio».');
 };
 if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('sw.js').catch(()=>{});
 renderPP();
