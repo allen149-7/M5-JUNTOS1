@@ -379,7 +379,7 @@ function sigOpen(id,onmsg,onclose){
       else onmsg&&onmsg(m);
     };
     ws.onerror=()=>{dlog('señal: error de WebSocket');if(!done){done=true;clearTimeout(to);rej(new Error('ws'))}};
-    ws.onclose=ev=>{dlog('señal: WebSocket cerrado'+(ev&&ev.code?' (código '+ev.code+')':''));clearInterval(hb);if(!done){done=true;clearTimeout(to);rej(new Error('ws'));return}if(onclose&&!api.closed)onclose(api)};
+    ws.onclose=ev=>{dlog('señal: WebSocket cerrado'+(ev&&ev.code?' (código '+ev.code+(ev.reason?' · '+ev.reason:'')+')':''));clearInterval(hb);if(!done){done=true;clearTimeout(to);rej(new Error('ws'));return}if(onclose&&!api.closed)onclose(api)};
   });
 }
 /* Opus en estéreo y a alta calidad (por defecto WebRTC usa voz en mono a ~32 kbps) */
@@ -429,7 +429,7 @@ async function openUidSig(first){
     try{
       const ns=await sigOpen(UID_PFX+prof.uid,hostSig,hostUidClosed);
       if(!me.host||!hostCode){ns.close();break}
-      sigU=ns;uidBusy=false;dlog('perfil: ID de amigo registrado');return;
+      sigU=ns;uidBusy=false;dlog('perfil: ID de amigo registrado');renderPeople();return;
     }catch(e){last=e.message;await sleep(first?1500:2000)}
   }
   uidBusy=false;
@@ -438,7 +438,7 @@ async function openUidSig(first){
     toast(last==='ID-TAKEN'?'Tu perfil ya tiene una sala abierta en otra pestaña: tus amigos no podrán entrar con un toque':'Tus amigos no podrán entrar con un toque (usa el código de sala)');
   }
 }
-function hostUidClosed(){sigU=null;if(me.host&&hostCode)openUidSig(false)}
+function hostUidClosed(){sigU=null;renderPeople();if(me.host&&hostCode)openUidSig(false)}
 /* Responde por el registro que esté abierto */
 function hsend(type,dst,payload){
   const s=sig&&sig.ws&&sig.ws.readyState===1?sig:(sigU&&sigU.ws&&sigU.ws.readyState===1?sigU:null);
@@ -536,7 +536,7 @@ const stage=t=>{const b=$('jn');if(b&&b.disabled)b.textContent=t};
 function failJoin(msg){toast(msg);leaveRoom(true)}
 async function startGuest(code,man,dstId){
   const gid='g'+rand()+rand(),DST=dstId||PFX+code;
-  let gotAns=false,settled=false,dead=false,reopening=false,resendAt=0,expired=false;
+  let gotAns=false,settled=false,dead=false,reopening=false,resendAt=0,expired=false,closes=0;
   const cands=[],outCands=[];
   const onSig=m=>{
     if(m.type==='ANSWER'){
@@ -548,9 +548,10 @@ async function startGuest(code,man,dstId){
     else if(m.type==='EXPIRE'&&!settled&&!gotAns)expired=true; /* el servicio avisa (~5 s) de que nadie recibió mi solicitud */
   };
   /* Si el servicio de salas cierra el WebSocket mientras el invitado aún no conecta, se vuelve a abrir con el mismo id y se reenvía la solicitud */
-  const onClose=()=>{sig=null;if(!settled&&!dead){dlog('invitado: se cayó la señal, reconectando…');reopen()}};
+  const onClose=()=>{sig=null;if(!settled&&!dead&&!gotAns){closes++;dlog('invitado: se cayó la señal ('+closes+'), reconectando…');if(closes<4)reopen()}else if(!settled&&!dead){reopen()}};
   const reopen=async()=>{
     if(reopening)return;reopening=true;
+    if(closes)await sleep(Math.min(2500,500*closes)); /* espera creciente: no machacar el servicio */
     for(let i=0;i<8&&!settled&&!dead&&!sig;i++){
       try{
         const ns=await sigOpen(gid,onSig,onClose);
@@ -590,6 +591,7 @@ async function startGuest(code,man,dstId){
     const iv=setInterval(()=>{
       if(gdc.readyState==='open'){clearInterval(iv);res()}
       else if(expired&&!gotAns){clearInterval(iv);rej(new Error('expired'))}
+      else if(closes>=4&&!gotAns&&!sig){clearInterval(iv);rej(new Error('svcclosed'))}
       else if(Date.now()-t0>(man?240000:25000)){clearInterval(iv);rej(new Error(gotAns?'ice':'noanswer'))}
       else if(!gotAns&&sig&&Date.now()-resendAt>3000){
         resendAt=Date.now();
@@ -635,7 +637,7 @@ async function enter(host,code,man,opts){
   }catch(e){
     b.disabled=false;b.textContent=old;joining=false;$('home').classList.remove('busy');
     let msg={timeout:'No se pudo contactar con el servicio de salas (¿sin internet o bloqueado?)',ws:'No se pudo contactar con el servicio de salas (¿sin internet o bloqueado?)',noanswer:'El anfitrión no respondió. Revisa el código y que su pantalla siga abierta en la sala',ice:'No se pudo establecer la conexión directa (la red puede estar bloqueando WebRTC)'}[e.message]||'No se pudo '+(host?'crear':'entrar a')+' la sala';
-    if(e.message==='expired'||e.message==='noanswer'&&opts&&opts.fname)msg=opts&&opts.fname?opts.fname+' no tiene una sala abierta ahora mismo':'No existe una sala con el código '+code;
+    if(e.message==='expired'||e.message==='svcclosed'||e.message==='noanswer'&&opts&&opts.fname)msg=opts&&opts.fname?opts.fname+' no tiene una sala abierta ahora mismo (o su página está desactualizada)':'No existe una sala con el código '+code;
     dlog('FALLO al '+(host?'crear':'unirse')+': '+e.message);toast(msg+' · Mira «Ver diagnóstico»');$('man').hidden=true;cleanup();return;
   }
   b.disabled=false;b.textContent=old;joining=false;$('home').classList.remove('busy');
@@ -913,7 +915,7 @@ function renderQueue(){
 }
 function renderPeople(){
   const a=S.people;$('pCount').textContent=a.length+(a.length===1?' persona':' personas');
-  $('plist').innerHTML=(me.host?`<div class="note">Comparte el código <b>${esc(S.code)}</b> para que la otra persona entre a esta sala.</div>`:'')+a.map((p,i)=>`<div class="pe">${avatar(p.name)}<div class="tm"><b>${esc(p.name)}</b></div>${p.host?'<span class="tag">Anfitrión</span>':''}${(me.host?i===0:p.name===me.name&&!p.host)?'<span class="tag">Tú</span>':''}</div>`).join('');
+  $('plist').innerHTML=(me.host?`<div class="note">Comparte el código <b>${esc(S.code)}</b> para que la otra persona entre a esta sala.<br>ID de amigo <b>${fmtUid(prof.uid)}</b>: ${sigU&&sigU.ws&&sigU.ws.readyState===1?'✓ tus amigos pueden entrar con un toque':'✗ sin registrar (tus amigos deben usar el código de sala)'}</div>`:'')+a.map((p,i)=>`<div class="pe">${avatar(p.name)}<div class="tm"><b>${esc(p.name)}</b></div>${p.host?'<span class="tag">Anfitrión</span>':''}${(me.host?i===0:p.name===me.name&&!p.host)?'<span class="tag">Tú</span>':''}</div>`).join('');
 }
 function renderAll(){renderPP();renderNow();renderQueue();renderPeople();$('repBtn').classList.toggle('on',S.rep)}
 $('list').onclick=e=>{if(!me.host)return;const r=e.target.closest('.tr');if(r)play(+r.dataset.i,true)};
