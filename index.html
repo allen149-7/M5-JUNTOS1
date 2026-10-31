@@ -1,4 +1,3 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -122,6 +121,12 @@ input[type=range]:disabled{opacity:.45;cursor:default}
 .guest #seek{pointer-events:none}
 .btn:disabled{opacity:.6;cursor:default}
 .guest .tr{cursor:default}
+
+.dbgl{position:relative;z-index:1;margin:18px auto 0;background:none;border:0;color:var(--fg2);font-size:13px;text-decoration:underline;cursor:pointer}
+#dbg{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.88);display:flex;flex-direction:column;padding:calc(var(--sat) + 14px) 14px calc(var(--sab) + 14px);max-width:480px;margin:0 auto}
+#dbg h3{margin:0 0 8px;font-size:18px}
+#dbg pre{flex:1;overflow:auto;margin:0 0 10px;padding:12px;border-radius:14px;background:#151517;font:11.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#d8d8dc}
+#dbg .row{margin:0}
 </style>
 </head>
 <body>
@@ -144,6 +149,7 @@ input[type=range]:disabled{opacity:.45;cursor:default}
     <input class="inp code" id="codeIn" maxlength="4" placeholder="••••" autocomplete="off">
     <div class="row"><button class="btn" id="jn">Unirme</button></div>
   </div>
+  <button class="dbgl" id="dbgOpen1">Ver diagnóstico de conexión</button>
 </div>
 
 <!-- ====================== SALA ====================== -->
@@ -198,11 +204,13 @@ input[type=range]:disabled{opacity:.45;cursor:default}
     <div class="sh"><h3>En la sala</h3><span class="cnt" id="pCount"></span>
       <button class="rb" data-close aria-label="Cerrar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
     <div class="list" id="plist"></div>
+    <button class="dbgl" id="dbgOpen2" style="margin:0 auto 18px">Ver diagnóstico de conexión</button>
   </div>
 
   <input type="file" id="file" accept="audio/*,.mp3,.flac,.wav,.m4a,.ogg" multiple hidden>
 </div>
 
+<div id="dbg" hidden><h3>Diagnóstico de conexión</h3><pre id="dbgT"></pre><div class="row"><button class="btn pri" id="dbgCopy">Copiar</button><button class="btn" id="dbgX">Cerrar</button></div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -224,6 +232,17 @@ const colorOf=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))>>>0;return C
 const avatar=n=>`<span class="av" style="background:${colorOf(n)}">${esc((n[0]||'?').toUpperCase())}</span>`;
 let toastT;const toast=m=>{const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('show'),2600)};
 const rand=()=>Math.random().toString(36).slice(2,9);
+const D=[],T0=Date.now();
+const dlog=m=>{D.push(((Date.now()-T0)/1000).toFixed(1).padStart(6)+'s  '+m);if(D.length>300)D.shift()};
+function showDbg(){
+  const head=['M5 Juntos · diagnóstico','Rol: '+(me.host?'anfitrión':(me.name?'invitado/ninguno':'ninguno'))+' · sala '+(S.code||hostCode||'-'),'Navegador: '+navigator.userAgent,'Página: '+location.href,'WebRTC: '+(window.RTCPeerConnection?'sí':'NO')+' · WebSocket: '+(window.WebSocket?'sí':'NO'),'Servicio de salas: '+SIG_URL.split('?')[0],'En línea: '+navigator.onLine,'---'];
+  $('dbgT').textContent=head.concat(D).join('\n');$('dbg').hidden=false;
+}
+$('dbgOpen1').onclick=$('dbgOpen2').onclick=showDbg;
+$('dbgX').onclick=()=>$('dbg').hidden=true;
+$('dbgCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('dbgT').textContent);toast('Copiado')}catch(e){const r=document.createRange();r.selectNodeContents($('dbgT'));const g=getSelection();g.removeAllRanges();g.addRange(r);toast('Selecciona y copia el texto')}};
+window.addEventListener('error',e=>dlog('ERROR página: '+e.message));
+window.addEventListener('unhandledrejection',e=>dlog('ERROR promesa: '+(e.reason&&e.reason.message||e.reason)));
 
 const SIG_URL=window.M5_SIG||'wss://0.peerjs.com/peerjs?key=peerjs';
 const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'stun:global.stun.twilio.com:3478'}]};
@@ -238,17 +257,19 @@ const G={pos:0,t0:0,dur:0}; /* progreso que recibe el invitado */
 function sigOpen(id,onmsg,onclose){
   return new Promise((res,rej)=>{
     let hb,done=false;
-    let ws;try{ws=new WebSocket(SIG_URL+'&id='+encodeURIComponent(id)+'&token='+rand())}catch(e){return rej(new Error('ws'))}
-    const api={ws,closed:false,send:(type,dst,payload)=>{if(ws.readyState===1)ws.send(JSON.stringify({type,dst,payload}))},close:()=>{api.closed=true;clearInterval(hb);try{ws.close()}catch(e){}}};
+    dlog('señal: conectando como '+id);
+    let ws;try{ws=new WebSocket(SIG_URL+'&id='+encodeURIComponent(id)+'&token='+rand())}catch(e){dlog('señal: no se pudo crear el WebSocket: '+e.message);return rej(new Error('ws'))}
+    const api={ws,closed:false,send:(type,dst,payload)=>{if(type!=='CANDIDATE')dlog('señal → '+type+' para '+dst+(ws.readyState===1?'':' (¡socket no abierto: estado '+ws.readyState+'!)'));if(ws.readyState===1)ws.send(JSON.stringify({type,dst,payload}))},close:()=>{api.closed=true;clearInterval(hb);try{ws.close()}catch(e){}}};
     const to=setTimeout(()=>{if(!done){done=true;rej(new Error('timeout'));api.close()}},9000);
     ws.onmessage=e=>{
       let m;try{m=JSON.parse(e.data)}catch(x){return}
-      if(m.type==='OPEN'){done=true;clearTimeout(to);hb=setInterval(()=>{if(ws.readyState===1)ws.send('{"type":"HEARTBEAT"}')},5000);res(api)}
+      if(m.type!=='OPEN'&&m.type!=='CANDIDATE'&&m.type!=='HEARTBEAT')dlog('señal ← '+m.type+(m.src?' de '+m.src:'')+(m.payload&&m.payload.msg?' · '+m.payload.msg:''));
+      if(m.type==='OPEN'){dlog('señal: conectado al servicio (OPEN)');done=true;clearTimeout(to);hb=setInterval(()=>{if(ws.readyState===1)ws.send('{"type":"HEARTBEAT"}')},5000);res(api)}
       else if(m.type==='ID-TAKEN'||m.type==='INVALID-KEY'||m.type==='ERROR'){if(!done){done=true;clearTimeout(to);rej(new Error(m.type))}}
       else onmsg&&onmsg(m);
     };
-    ws.onerror=()=>{if(!done){done=true;clearTimeout(to);rej(new Error('ws'))}};
-    ws.onclose=()=>{clearInterval(hb);if(!done){done=true;clearTimeout(to);rej(new Error('ws'));return}if(onclose&&!api.closed)onclose(api)};
+    ws.onerror=()=>{dlog('señal: error de WebSocket');if(!done){done=true;clearTimeout(to);rej(new Error('ws'))}};
+    ws.onclose=ev=>{dlog('señal: WebSocket cerrado'+(ev&&ev.code?' (código '+ev.code+')':''));clearInterval(hb);if(!done){done=true;clearTimeout(to);rej(new Error('ws'));return}if(onclose&&!api.closed)onclose(api)};
   });
 }
 /* Opus en estéreo y a alta calidad (por defecto WebRTC usa voz en mono a ~32 kbps) */
@@ -305,7 +326,7 @@ document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='visible'&&me.host&&hostCode&&(!sig||!sig.ws||sig.ws.readyState!==1)){setLink(false);retryHostSig()}
 });
 function hostSig(m){
-  if(m.type==='OFFER')hostOffer(m.src,m.payload).catch(e=>{console.error('oferta',e);toast('Error al conectar con un invitado: '+(e&&e.message||e));dropGuest(m.src,true)});
+  if(m.type==='OFFER')hostOffer(m.src,m.payload).catch(e=>{console.error('oferta',e);dlog('anfitrión: ERROR al aceptar: '+(e&&e.message||e));toast('Error al conectar con un invitado: '+(e&&e.message||e));dropGuest(m.src,true)});
   else if(m.type==='CANDIDATE'){const g=guests.get(m.src);if(g)addCand(g,m.payload&&m.payload.candidate)}
   else if(m.type==='LEAVE')dropGuest(m.src);
 }
@@ -314,16 +335,18 @@ function addCand(g,c){
   if(g.pc.remoteDescription)g.pc.addIceCandidate(c).catch(()=>{});else g.cand.push(c);
 }
 async function hostOffer(src,p){
+  dlog('anfitrión: recibí solicitud de '+src);
   const prev=guests.get(src);
   if(prev&&prev.sdp===p.sdp){if(prev.ans)sig.send('ANSWER',src,{sdp:prev.ans});return} /* oferta repetida: se reenvía la misma respuesta */
   dropGuest(src,true);
   const pc=new RTCPeerConnection(ICE),g={pc,dc:null,name:'Invitado',cand:[],open:false,sdp:p.sdp,ans:''};
   guests.set(src,g);
   pc.onicecandidate=e=>{if(e.candidate)sig.send('CANDIDATE',src,{candidate:e.candidate.toJSON()})};
-  pc.onconnectionstatechange=()=>{if(pc.connectionState==='failed'||pc.connectionState==='closed')dropGuest(src)};
+  pc.oniceconnectionstatechange=()=>dlog('anfitrión: ICE '+pc.iceConnectionState);
+  pc.onconnectionstatechange=()=>{dlog('anfitrión: conexión '+pc.connectionState);if(pc.connectionState==='failed'||pc.connectionState==='closed')dropGuest(src)};
   pc.ondatachannel=e=>{
     g.dc=e.channel;
-    e.channel.onopen=()=>{g.open=true};
+    e.channel.onopen=()=>{g.open=true;dlog('anfitrión: canal de datos abierto')};
     e.channel.onmessage=ev=>{let m;try{m=JSON.parse(ev.data)}catch(x){return}onGuestMsg(src,g,m)};
     e.channel.onclose=()=>dropGuest(src);
   };
@@ -333,7 +356,7 @@ async function hostOffer(src,p){
   tr.direction='sendonly';
   const ans=await pc.createAnswer();ans.sdp=munge(ans.sdp);
   await pc.setLocalDescription(ans);
-  g.ans=ans.sdp;sig.send('ANSWER',src,{sdp:ans.sdp});
+  g.ans=ans.sdp;sig.send('ANSWER',src,{sdp:ans.sdp});dlog('anfitrión: respuesta enviada');
   g.cand.splice(0).forEach(c=>pc.addIceCandidate(c).catch(()=>{}));
   /* subir el bitrate del emisor (por defecto es bajo) */
   [800,3000].forEach(ms=>setTimeout(async()=>{try{
@@ -342,6 +365,7 @@ async function hostOffer(src,p){
   }catch(e){}},ms));
 }
 function onGuestMsg(id,g,m){
+  dlog('anfitrión: mensaje del invitado: '+m.t);
   if(m.t==='hello'){
     g.name=String(m.name||'Invitado').slice(0,20);g.hello=true;
     sendFull(g);broadcastPeople();toast(g.name+' se unió');
@@ -376,7 +400,7 @@ async function startGuest(code){
   let gotAns=false,settled=false;
   const cands=[];
   sig=await sigOpen(gid,m=>{
-    if(m.type==='ANSWER'){gotAns=true;gpc.setRemoteDescription({type:'answer',sdp:m.payload.sdp}).then(()=>cands.splice(0).forEach(c=>gpc.addIceCandidate(c).catch(()=>{}))).catch(()=>{})}
+    if(m.type==='ANSWER'){dlog('invitado: recibí la respuesta del anfitrión');gotAns=true;gpc.setRemoteDescription({type:'answer',sdp:m.payload.sdp}).then(()=>cands.splice(0).forEach(c=>gpc.addIceCandidate(c).catch(()=>{}))).catch(()=>{})}
     else if(m.type==='CANDIDATE'){const c=m.payload&&m.payload.candidate;if(!c)return;if(gpc&&gpc.remoteDescription)gpc.addIceCandidate(c).catch(()=>{});else cands.push(c)}
     else if(m.type==='EXPIRE'&&!settled)failJoin('No existe una sala con el código '+code);
   });
@@ -384,14 +408,16 @@ async function startGuest(code){
   gpc=new RTCPeerConnection(ICE);
   gpc.addTransceiver('audio',{direction:'recvonly'});
   gdc=gpc.createDataChannel('ctl');
+  gpc.oniceconnectionstatechange=()=>dlog('invitado: ICE '+gpc.iceConnectionState);
   gpc.onicecandidate=e=>{if(e.candidate)sig&&sig.send('CANDIDATE',PFX+code,{candidate:e.candidate.toJSON()})};
   gpc.ontrack=e=>{
+    dlog('invitado: llegó el audio');
     remote.srcObject=e.streams[0]||new MediaStream([e.track]);
     remote.volume=$('vol').value/100;
     remote.play().catch(()=>{toast('Toca la pantalla para activar el sonido');document.addEventListener('pointerdown',()=>remote.play().catch(()=>{}),{once:true})});
   };
-  gpc.onconnectionstatechange=()=>{if(settled&&(gpc.connectionState==='failed'))hostGone('Se perdió la conexión')};
-  gdc.onopen=()=>{settled=true;dcSend(gdc,{t:'hello',name:me.name});if(sig){sig.close();sig=null}};
+  gpc.onconnectionstatechange=()=>{dlog('invitado: conexión '+gpc.connectionState);if(settled&&(gpc.connectionState==='failed'))hostGone('Se perdió la conexión')};
+  gdc.onopen=()=>{dlog('invitado: canal de datos abierto');settled=true;dcSend(gdc,{t:'hello',name:me.name});if(sig){sig.close();sig=null}};
   gdc.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch(x){return}onHostMsg(m)};
   gdc.onclose=()=>{if(settled)hostGone('El anfitrión cerró la sala')};
   const off=await gpc.createOffer();off.sdp=munge(off.sdp);
@@ -438,7 +464,7 @@ async function enter(host,code){
   }catch(e){
     b.disabled=false;b.textContent=old;
     const msg={timeout:'No se pudo contactar con el servicio de salas (¿sin internet o bloqueado?)',ws:'No se pudo contactar con el servicio de salas (¿sin internet o bloqueado?)',noanswer:'El anfitrión no respondió. Revisa el código y que su pantalla siga abierta en la sala',ice:'No se pudo establecer la conexión directa (la red puede estar bloqueando WebRTC)'}[e.message]||'No se pudo '+(host?'crear':'entrar a')+' la sala';
-    toast(msg);cleanup();return;
+    dlog('FALLO al '+(host?'crear':'unirse')+': '+e.message);toast(msg+' · Mira «Ver diagnóstico»');cleanup();return;
   }
   b.disabled=false;b.textContent=old;
   S.code=code;
@@ -611,5 +637,3 @@ window.addEventListener('pagehide',()=>{if(me.host)bcast({t:'bye'})});
 </script>
 </body>
 </html>
-
-</body></html>
