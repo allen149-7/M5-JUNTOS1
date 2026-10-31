@@ -397,19 +397,37 @@ const stage=t=>{const b=$('jn');if(b&&b.disabled)b.textContent=t};
 function failJoin(msg){toast(msg);leaveRoom(true)}
 async function startGuest(code){
   const gid='g'+rand()+rand();
-  let gotAns=false,settled=false;
-  const cands=[];
-  sig=await sigOpen(gid,m=>{
-    if(m.type==='ANSWER'){dlog('invitado: recibí la respuesta del anfitrión');gotAns=true;gpc.setRemoteDescription({type:'answer',sdp:m.payload.sdp}).then(()=>cands.splice(0).forEach(c=>gpc.addIceCandidate(c).catch(()=>{}))).catch(()=>{})}
+  let gotAns=false,settled=false,dead=false,reopening=false,resendAt=0;
+  const cands=[],outCands=[];
+  const onSig=m=>{
+    if(m.type==='ANSWER'){
+      dlog('invitado: recibí la respuesta del anfitrión');gotAns=true;
+      if(gpc.signalingState!=='have-local-offer')return;
+      gpc.setRemoteDescription({type:'answer',sdp:m.payload.sdp}).then(()=>cands.splice(0).forEach(c=>gpc.addIceCandidate(c).catch(()=>{}))).catch(()=>{});
+    }
     else if(m.type==='CANDIDATE'){const c=m.payload&&m.payload.candidate;if(!c)return;if(gpc&&gpc.remoteDescription)gpc.addIceCandidate(c).catch(()=>{});else cands.push(c)}
     else if(m.type==='EXPIRE'&&!settled)failJoin('No existe una sala con el código '+code);
-  });
+  };
+  /* Si el servicio de salas cierra el WebSocket mientras el invitado aún no conecta, se vuelve a abrir con el mismo id y se reenvía la solicitud */
+  const onClose=()=>{sig=null;if(!settled&&!dead){dlog('invitado: se cayó la señal, reconectando…');reopen()}};
+  const reopen=async()=>{
+    if(reopening)return;reopening=true;
+    for(let i=0;i<8&&!settled&&!dead&&!sig;i++){
+      try{
+        const ns=await sigOpen(gid,onSig,onClose);
+        if(settled||dead){ns.close();break}
+        sig=ns;resendAt=0;dlog('invitado: señal reconectada');
+      }catch(e){dlog('invitado: reintento de señal falló ('+e.message+')');await sleep(800)}
+    }
+    reopening=false;
+  };
+  sig=await sigOpen(gid,onSig,onClose);
   stage('Buscando la sala…');
   gpc=new RTCPeerConnection(ICE);
   gpc.addTransceiver('audio',{direction:'recvonly'});
   gdc=gpc.createDataChannel('ctl');
   gpc.oniceconnectionstatechange=()=>dlog('invitado: ICE '+gpc.iceConnectionState);
-  gpc.onicecandidate=e=>{if(e.candidate)sig&&sig.send('CANDIDATE',PFX+code,{candidate:e.candidate.toJSON()})};
+  gpc.onicecandidate=e=>{if(e.candidate){const c={candidate:e.candidate.toJSON()};outCands.push(c);sig&&sig.send('CANDIDATE',PFX+code,c)}};
   gpc.ontrack=e=>{
     dlog('invitado: llegó el audio');
     remote.srcObject=e.streams[0]||new MediaStream([e.track]);
@@ -422,17 +440,21 @@ async function startGuest(code){
   gdc.onclose=()=>{if(settled)hostGone('El anfitrión cerró la sala')};
   const off=await gpc.createOffer();off.sdp=munge(off.sdp);
   await gpc.setLocalDescription(off);
-  sig.send('OFFER',PFX+code,{sdp:off.sdp});stage('Esperando al anfitrión…');
-  /* esperar a que el canal abra; si el anfitrión aún no contesta, se reenvía la solicitud cada 3 s */
+  stage('Esperando al anfitrión…');
+  /* esperar a que el canal abra; mientras el anfitrión no conteste, se reenvía la solicitud (y mis candidatos) cada 3 s */
   await new Promise((res,rej)=>{
-    const t0=Date.now();let last=t0;
+    const t0=Date.now();
     const iv=setInterval(()=>{
       if(gdc.readyState==='open'){clearInterval(iv);res()}
-      else if(Date.now()-t0>18000){clearInterval(iv);rej(new Error(gotAns?'ice':'noanswer'))}
-      else if(!gotAns&&Date.now()-last>3000&&sig){last=Date.now();sig.send('OFFER',PFX+code,{sdp:off.sdp})}
+      else if(Date.now()-t0>25000){clearInterval(iv);rej(new Error(gotAns?'ice':'noanswer'))}
+      else if(!gotAns&&sig&&Date.now()-resendAt>3000){
+        resendAt=Date.now();
+        sig.send('OFFER',PFX+code,{sdp:off.sdp});
+        outCands.forEach(c=>sig&&sig.send('CANDIDATE',PFX+code,c));
+      }
       else if(gotAns)stage('Conectando…');
     },150);
-  });
+  }).finally(()=>{dead=true});
 }
 function hostGone(msg){if(!me.host&&!$('room').hidden){toast(msg);leaveRoom(true)}}
 const thumbs=new Map(),bigs=new Map();
