@@ -67,6 +67,14 @@ input[type=range]:disabled{opacity:.45;cursor:default}
 .cover img,.cover .ph{width:100%;height:100%;object-fit:cover;object-position:top;-webkit-mask-image:linear-gradient(#000 50%,rgba(0,0,0,.55) 78%,transparent 100%);mask-image:linear-gradient(#000 50%,rgba(0,0,0,.55) 78%,transparent 100%)}
 .ph{background:radial-gradient(circle at 50% 35%,rgba(255,255,255,.25),transparent 55%),linear-gradient(160deg,#d2623f,#7a2414);display:flex;align-items:center;justify-content:center}
 .ph svg{width:38%;opacity:.55}
+.cvw{flex:1;min-height:0;position:relative;z-index:1;display:flex;flex-direction:column}
+.cvw .cover{flex:1}
+.lyr{position:absolute;inset:0;z-index:3;overflow-y:auto;padding:calc(var(--sat) + 74px) 26px 70px;background:linear-gradient(rgba(0,0,0,.42),rgba(0,0,0,.62));-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);-webkit-mask-image:linear-gradient(transparent,#000 14%,#000 88%,transparent);mask-image:linear-gradient(transparent,#000 14%,#000 88%,transparent);scrollbar-width:none}
+.lyr::-webkit-scrollbar{display:none}
+.ll{margin:0 0 16px;font-size:22px;font-weight:800;line-height:1.3;color:rgba(255,255,255,.4);transition:color .25s,transform .25s;transform-origin:left center}
+.ll.on{color:#fff;transform:scale(1.04)}
+.lm{margin:26vh 0 0;text-align:center;font-size:15px;color:var(--fg2)}
+.top #lyBtn.on{background:#fff;color:#000}
 .body{position:relative;z-index:1;padding:0 22px 6px}
 .info{display:flex;align-items:center;gap:12px;margin-bottom:12px}
 .meta{flex:1;min-width:0}
@@ -164,10 +172,11 @@ input[type=range]:disabled{opacity:.45;cursor:default}
     <button class="rb" id="leave" aria-label="Salir de la sala"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
     <button class="chip" id="share" aria-label="Copiar código de la sala"><i id="dot"></i><span>Sala</span><b id="rcode">----</b></button>
     <div class="spacer"></div>
+    <button class="rb" id="lyBtn" aria-label="Letras"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h13"/></svg></button>
     <button class="rb" id="ppl" aria-label="Oyentes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.4"/><path d="M2.8 19c.4-3.3 3-5 6.2-5s5.8 1.7 6.2 5"/><path d="M16 4.8a3.2 3.2 0 0 1 0 6.2M18 14.4c1.9.6 3.1 2.2 3.3 4.6"/></svg></button>
   </div>
 
-  <div class="cover" id="cover"><div class="ph"><svg viewBox="0 0 24 24" fill="#fff"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg></div></div>
+  <div class="cvw"><div class="cover" id="cover"><div class="ph"><svg viewBox="0 0 24 24" fill="#fff"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3z"/></svg></div></div><div class="lyr" id="lyr" hidden><div id="lyIn"></div></div></div>
 
   <div class="body">
     <div class="info">
@@ -405,6 +414,7 @@ function sendFull(g){
   dcSend(g.dc,stateMsg());
   S.queue.forEach(t=>{if(t.th)dcSend(g.dc,{t:'th',id:t.id,img:t.th})});
   const c=S.queue[S.cur];if(c&&c.big)dcSend(g.dc,{t:'cover',id:c.id,img:c.big});
+  if(c&&S.lyr&&S.lyr.id===c.id&&!S.lyr.wait&&!S.lyr.err)dcSend(g.dc,lyrMsg());
 }
 const bState=()=>bcast(stateMsg());
 setInterval(()=>{if(me.host&&guests.size&&S.cur>=0)bcast({t:'time',pos:audio.currentTime||0,playing:!audio.paused,dur:audio.duration||0})},1000);
@@ -490,6 +500,7 @@ function onHostMsg(m){
   }
   else if(m.t==='th'){thumbs.set(m.id,m.img);const t=S.queue.find(x=>x.id===m.id);if(t){t.th=m.img;renderQueue()}}
   else if(m.t==='cover'){bigs.set(m.id,m.img);const t=S.queue.find(x=>x.id===m.id);if(t){t.cover=m.img;if(S.queue[S.cur]===t)renderNow()}}
+  else if(m.t==='lyr'){S.lyr=m.none?{id:m.id,none:true}:{id:m.id,sync:m.sync,lines:m.lines};renderLyr();lyrTick(guestPos())}
   else if(m.t==='time'){G.pos=m.pos;G.t0=performance.now();G.dur=m.dur||G.dur;if(m.playing!==S.playing){S.playing=m.playing;renderPP()}}
 }
 const guestPos=()=>Math.min(G.dur||1e9,G.pos+(S.playing?(performance.now()-G.t0)/1000:0));
@@ -530,6 +541,7 @@ function cleanup(){
   audio.pause();thumbs.clear();bigs.clear();
 }
 function leaveRoom(quiet){
+  S.lyr=null;lyShown=null;$('lyr').hidden=true;$('lyBtn').classList.remove('on');
   if(me.host)bcast({t:'bye'});
   cleanup();
   S.queue=[];S.cur=-1;S.playing=false;S.people=[];
@@ -704,6 +716,7 @@ function play(i,go=true){
   if(go)audio.play().catch(()=>{});
   renderNow();renderQueue();
   bState();if(t.big)bcast({t:'cover',id:t.id,img:t.big});
+  lyrLoad(t);
 }
 audio.onplay=()=>{if(!me.host)return;S.playing=true;renderPP();bState()};
 audio.onpause=()=>{if(!me.host)return;S.playing=false;renderPP();bState()};
@@ -711,6 +724,7 @@ audio.onseeked=()=>{if(me.host)bState()};
 audio.onended=()=>{if(S.rep)play(S.cur);else if(S.cur<S.queue.length-1)play(S.cur+1);else{S.playing=false;renderPP();bState()}};
 audio.ontimeupdate=()=>{if(me.host)paintTime(audio.currentTime,audio.duration||0)};
 function paintTime(pos,d){
+  lyrTick(pos);
   $('cur').textContent=fmt(pos);
   if(d){$('dur').textContent=fmt(d);const v=Math.round(Math.min(1,pos/d)*1000);if(!seeking){$('seek').value=v;$('seek').style.setProperty('--p',v/10+'%')}}
 }
@@ -758,6 +772,7 @@ function renderNow(){
   $('seek').disabled=!me.host||!t;
   if(!t){$('cur').textContent='0:00';$('dur').textContent='0:00';$('seek').value=0;$('seek').style.setProperty('--p','0%')}
   else{$('dur').textContent=fmt(me.host?t.dur:(G.dur||t.dur))}
+  renderLyr();
 }
 function renderQueue(){
   const n=S.queue.length;$('qCount').textContent=n?n+(n===1?' canción':' canciones'):'';
@@ -778,6 +793,99 @@ $('listBtn').onclick=()=>openSheet('qSheet');
 $('ppl').onclick=()=>openSheet('pSheet');
 $('scrim').onclick=closeSheets;
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeSheets);
+/* ---------- Letras: el anfitrión las busca en LRCLIB (con caché local) y se las envía a los invitados ---------- */
+const lnorm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[\(\[].*?[\)\]]/g,' ').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+function lrcPick(list,s,dur){
+  const tt=lnorm(s.title),aa=lnorm(s.artist);
+  if(!tt||!Array.isArray(list))return null;
+  let best=null,bs=0;
+  for(const c of list){
+    if(!c||c.instrumental||!(c.syncedLyrics||c.plainLyrics))continue;
+    const ct=lnorm(c.trackName);let sc=0;
+    if(ct===tt)sc+=4;else if(ct&&(ct.includes(tt)||tt.includes(ct)))sc+=2;else continue;
+    const ca=lnorm(c.artistName);
+    if(ca&&aa&&(aa.includes(ca)||ca.includes(aa)||aa.split(' ').some(w=>w.length>2&&ca.includes(w))))sc+=3;
+    if(dur&&c.duration){const d=Math.abs(c.duration-dur);sc+=d<=2?3:d<=5?1:d>15?-1:0}
+    if(c.syncedLyrics)sc+=.5;
+    if(sc>bs){bs=sc;best=c}
+  }
+  return bs>=6?best:null;
+}
+function parseLrc(t){
+  const lines=[],plain=[];let off=0;
+  for(const raw of String(t).replace(/^\uFEFF/,'').split(/\r\n|\r|\n/)){
+    const ln=raw.trim();if(!ln)continue;
+    const om=ln.match(/^\[offset:\s*(-?\d+)\]/i);if(om){off=+om[1]/1000;continue}
+    const re=/\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;let m,last=0;const ts=[];
+    while((m=re.exec(ln))){ts.push(+m[1]*60+(+m[2])+(m[3]?+('0.'+m[3]):0));last=re.lastIndex}
+    if(ts.length){const tx=ln.slice(last).replace(/<\d+:\d+(?:[.:]\d+)?>/g,'').trim();ts.forEach(x=>lines.push({t:x,x:tx}))}
+    else if(!/^\[[a-z]+:.*\]$/i.test(ln))plain.push(ln);
+  }
+  if(lines.length){lines.forEach(l=>l.t-=off);lines.sort((a,b)=>a.t-b.t);return{sync:true,lines}}
+  return{sync:false,lines:plain.map(x=>({x}))};
+}
+async function lrcFind(t){
+  const art=String(t.artist||'').split(/\s*(?:,|;|&|\/|\bfeat\.?|\bft\.?)\s*/i)[0].trim();
+  const qs=[];
+  if(art&&!/desconocido|unknown/i.test(art))qs.push({track_name:t.title,artist_name:art});
+  qs.push({track_name:t.title});
+  for(const p of qs){
+    const r=await fetch('https://lrclib.net/api/search?'+new URLSearchParams(p));
+    if(r.status===404)continue;
+    if(!r.ok)throw new Error('LRCLIB http '+r.status);
+    const c=lrcPick(await r.json(),t,t.dur);
+    if(c)return c;
+  }
+  return null;
+}
+const lyrMsg=()=>({t:'lyr',...S.lyr});
+async function lyrLoad(t){
+  S.lyr={id:t.id,wait:true};renderLyr();
+  const k='m5jl:'+lnorm((t.title||'')+' '+(t.artist||''));let res=null;
+  try{const c=JSON.parse(localStorage.getItem(k)||'null');if(c&&(c.lines||Date.now()-c.miss<6048e5))res=c}catch(e){}
+  if(!res){
+    try{
+      const c=await lrcFind(t);
+      res=c?parseLrc(c.syncedLyrics||c.plainLyrics):{miss:Date.now()};
+      if(res.lines&&res.lines.length>300)res.lines.length=300;
+      try{localStorage.setItem(k,JSON.stringify(res))}catch(e){}
+    }catch(e){
+      dlog('letras: '+(e&&e.message||e));
+      if(S.queue[S.cur]===t){S.lyr={id:t.id,err:true};renderLyr();bcast({t:'lyr',id:t.id,none:true})}
+      return;
+    }
+  }
+  if(S.queue[S.cur]!==t)return;
+  S.lyr=res.lines&&res.lines.length?{id:t.id,sync:res.sync,lines:res.lines}:{id:t.id,none:true};
+  renderLyr();bcast(lyrMsg());
+}
+let lyShown=null,lyIdx=-1;
+function renderLyr(){
+  const cur=S.queue[S.cur],L=S.lyr,box=$('lyIn'),ok=cur&&L&&L.id===cur.id;
+  const key=!cur?'none':ok?L:'wait'+cur.id;
+  if(lyShown===key)return;
+  lyShown=key;lyIdx=-1;
+  if(!cur)box.innerHTML='<p class="lm">Nada sonando</p>';
+  else if(!ok||L.wait)box.innerHTML='<p class="lm">Buscando letra…</p>';
+  else if(L.err)box.innerHTML='<p class="lm">No se pudo buscar la letra</p>';
+  else if(L.none||!L.lines||!L.lines.length)box.innerHTML='<p class="lm">Sin letra para esta canción</p>';
+  else box.innerHTML=L.lines.map((l,i)=>`<p class="ll" data-i="${i}">${esc(l.x)||'♪'}</p>`).join('');
+}
+function lyrTick(pos){
+  const L=S.lyr,cur=S.queue[S.cur];
+  if(!L||!cur||L.id!==cur.id||!L.sync||!L.lines||$('lyr').hidden)return;
+  let i=-1;for(let k=0;k<L.lines.length;k++){if(L.lines[k].t<=pos+.2)i=k;else break}
+  if(i===lyIdx)return;
+  lyIdx=i;
+  const ps=$('lyIn').children;
+  for(const p of ps)p.classList.remove('on');
+  const el=ps[i];
+  if(el){el.classList.add('on');const c=$('lyr');c.scrollTo({top:el.offsetTop-c.clientHeight/2+el.clientHeight/2,behavior:'smooth'})}
+}
+$('lyBtn').onclick=()=>{
+  const l=$('lyr');l.hidden=!l.hidden;$('lyBtn').classList.toggle('on',!l.hidden);
+  if(!l.hidden){lyIdx=-1;renderLyr();lyrTick(me.host?audio.currentTime:guestPos())}
+};
 /* ---------- Conexión manual: sin servicio de salas, se intercambian dos códigos a mano ---------- */
 const gathered=pc=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();const f=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',f);r()}};pc.addEventListener('icegatheringstatechange',f);setTimeout(r,8000)}).then(()=>{const d=(pc.localDescription&&pc.localDescription.sdp)||'',c=t=>(d.match(new RegExp('typ '+t,'g'))||[]).length;dlog('ICE reunido · host: '+c('host')+' · srflx: '+c('srflx')+' · relay: '+c('relay'))});
 const M={go:null};
