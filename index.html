@@ -127,6 +127,10 @@ input[type=range]:disabled{opacity:.45;cursor:default}
 #dbg h3{margin:0 0 8px;font-size:18px}
 #dbg pre{flex:1;overflow:auto;margin:0 0 10px;padding:12px;border-radius:14px;background:#151517;font:11.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all;color:#d8d8dc}
 #dbg .row{margin:0}
+#man{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.92);display:flex;flex-direction:column;gap:10px;padding:calc(var(--sat) + 14px) 14px calc(var(--sab) + 14px);max-width:480px;margin:0 auto;overflow:auto}
+#man h3{margin:0}#man .row{margin:0}#man .note{margin:0}
+#man textarea{font:11px/1.4 ui-monospace,Menlo,Consolas,monospace;word-break:break-all;resize:none;border-radius:14px}
+.guest #manH{display:none}
 </style>
 </head>
 <body>
@@ -150,6 +154,7 @@ input[type=range]:disabled{opacity:.45;cursor:default}
     <div class="row"><button class="btn" id="jn">Unirme</button></div>
   </div>
   <button class="dbgl" id="dbgOpen1">Ver diagnóstico de conexión</button>
+  <button class="dbgl" id="manG" style="margin-top:8px">Conexión manual (sin servidor)</button>
 </div>
 
 <!-- ====================== SALA ====================== -->
@@ -204,6 +209,7 @@ input[type=range]:disabled{opacity:.45;cursor:default}
     <div class="sh"><h3>En la sala</h3><span class="cnt" id="pCount"></span>
       <button class="rb" data-close aria-label="Cerrar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button></div>
     <div class="list" id="plist"></div>
+    <button class="dbgl" id="manH" style="margin:0 auto 6px">Añadir invitado manualmente</button>
     <button class="dbgl" id="dbgOpen2" style="margin:0 auto 18px">Ver diagnóstico de conexión</button>
   </div>
 
@@ -211,6 +217,11 @@ input[type=range]:disabled{opacity:.45;cursor:default}
 </div>
 
 <div id="dbg" hidden><h3>Diagnóstico de conexión</h3><pre id="dbgT"></pre><div class="row"><button class="btn pri" id="dbgCopy">Copiar</button><button class="btn" id="dbgX">Cerrar</button></div></div>
+<div id="man" hidden><h3 id="manT"></h3><div class="note" id="manP"></div>
+  <label for="manOut" style="font-size:12px;color:var(--fg2)">MI CÓDIGO</label><textarea class="inp" id="manOut" rows="5" readonly></textarea>
+  <div class="row"><button class="btn" id="manCopy">Copiar mi código</button></div>
+  <label for="manIn" style="font-size:12px;color:var(--fg2)">CÓDIGO DE LA OTRA PERSONA</label><textarea class="inp" id="manIn" rows="5" placeholder="Pega aquí el código"></textarea>
+  <div class="row"><button class="btn pri" id="manGo">Continuar</button><button class="btn" id="manX">Cerrar</button></div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -395,7 +406,7 @@ let gpc=null,gdc=null;
 const remote=new Audio();remote.autoplay=true;remote.playsInline=true;
 const stage=t=>{const b=$('jn');if(b&&b.disabled)b.textContent=t};
 function failJoin(msg){toast(msg);leaveRoom(true)}
-async function startGuest(code){
+async function startGuest(code,man){
   const gid='g'+rand()+rand();
   let gotAns=false,settled=false,dead=false,reopening=false,resendAt=0;
   const cands=[],outCands=[];
@@ -421,7 +432,7 @@ async function startGuest(code){
     }
     reopening=false;
   };
-  sig=await sigOpen(gid,onSig,onClose);
+  if(!man)sig=await sigOpen(gid,onSig,onClose);
   stage('Buscando la sala…');
   gpc=new RTCPeerConnection(ICE);
   gpc.addTransceiver('audio',{direction:'recvonly'});
@@ -440,13 +451,17 @@ async function startGuest(code){
   gdc.onclose=()=>{if(settled)hostGone('El anfitrión cerró la sala')};
   const off=await gpc.createOffer();off.sdp=munge(off.sdp);
   await gpc.setLocalDescription(off);
-  stage('Esperando al anfitrión…');
+  if(man){
+    await gathered(gpc);
+    man.apply=async c=>{try{await gpc.setRemoteDescription({type:'answer',sdp:atob(c.replace(/\s+/g,''))});stage('Conectando…');toast('Conectando…')}catch(e){toast('Código no válido');dlog('manual: '+(e&&e.message||e))}};
+    man.onOffer(btoa(gpc.localDescription.sdp));stage('Esperando el código del anfitrión…');
+  }else stage('Esperando al anfitrión…');
   /* esperar a que el canal abra; mientras el anfitrión no conteste, se reenvía la solicitud (y mis candidatos) cada 3 s */
   await new Promise((res,rej)=>{
     const t0=Date.now();
     const iv=setInterval(()=>{
       if(gdc.readyState==='open'){clearInterval(iv);res()}
-      else if(Date.now()-t0>25000){clearInterval(iv);rej(new Error(gotAns?'ice':'noanswer'))}
+      else if(Date.now()-t0>(man?240000:25000)){clearInterval(iv);rej(new Error(gotAns?'ice':'noanswer'))}
       else if(!gotAns&&sig&&Date.now()-resendAt>3000){
         resendAt=Date.now();
         sig.send('OFFER',PFX+code,{sdp:off.sdp});
@@ -477,22 +492,22 @@ function setRole(host){
   me.host=host;$('room').classList.toggle('guest',!host);
   $('seek').disabled=!host;
 }
-async function enter(host,code){
+async function enter(host,code,man){
   me.name=($('nameIn').value.trim()||(host?'Anfitrión':'Invitado')).slice(0,20);
   const b=host?$('mk'):$('jn'),old=b.textContent;b.disabled=true;b.textContent=host?'Creando…':'Conectando…';
   try{
     setRole(host);
-    if(host)code=await startHost();else await startGuest(code);
+    if(host)code=await startHost();else await startGuest(code,man);
   }catch(e){
     b.disabled=false;b.textContent=old;
     const msg={timeout:'No se pudo contactar con el servicio de salas (¿sin internet o bloqueado?)',ws:'No se pudo contactar con el servicio de salas (¿sin internet o bloqueado?)',noanswer:'El anfitrión no respondió. Revisa el código y que su pantalla siga abierta en la sala',ice:'No se pudo establecer la conexión directa (la red puede estar bloqueando WebRTC)'}[e.message]||'No se pudo '+(host?'crear':'entrar a')+' la sala';
-    dlog('FALLO al '+(host?'crear':'unirse')+': '+e.message);toast(msg+' · Mira «Ver diagnóstico»');cleanup();return;
+    dlog('FALLO al '+(host?'crear':'unirse')+': '+e.message);toast(msg+' · Mira «Ver diagnóstico»');$('man').hidden=true;cleanup();return;
   }
   b.disabled=false;b.textContent=old;
   S.code=code;
   if(host){S.queue=[];S.cur=-1;S.playing=false;S.rep=false;S.hostName=me.name;S.people=[{name:me.name,host:true}]}
   /* el invitado conserva lo que el anfitrión ya le envió al abrirse el canal */
-  $('home').hidden=true;$('room').hidden=false;$('rcode').textContent=code;setLink(true);
+  $('home').hidden=true;$('man').hidden=true;$('room').hidden=false;$('rcode').textContent=code;setLink(true);
   renderAll();toast(host?'Sala '+code+' creada: pásale el código a tu amigo':'Conectado a la sala '+code);
 }
 $('mk').onclick=()=>enter(true);
@@ -654,6 +669,42 @@ $('listBtn').onclick=()=>openSheet('qSheet');
 $('ppl').onclick=()=>openSheet('pSheet');
 $('scrim').onclick=closeSheets;
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeSheets);
+/* ---------- Conexión manual: sin servicio de salas, se intercambian dos códigos a mano ---------- */
+const gathered=pc=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();const f=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',f);r()}};pc.addEventListener('icegatheringstatechange',f);setTimeout(r,5000)});
+const M={go:null};
+function manShow(t,h,lab,go){$('manT').textContent=t;$('manP').innerHTML=h;$('manGo').textContent=lab;$('manGo').disabled=false;$('manOut').value='';$('manIn').value='';M.go=go;$('man').hidden=false}
+$('manGo').onclick=()=>M.go&&M.go();
+$('manX').onclick=()=>$('man').hidden=true;
+$('manCopy').onclick=async()=>{const v=$('manOut').value;if(!v)return;try{await navigator.clipboard.writeText(v);toast('Código copiado')}catch(e){$('manOut').select();toast('Selecciona y copia el texto')}};
+$('manG').onclick=()=>{
+  const man={onOffer:c=>{$('manOut').value=c;$('manGo').disabled=false}};
+  manShow('Unirme sin servidor','1) Copia <b>mi código</b> y envíaselo al anfitrión (él: Oyentes → «Añadir invitado manualmente»).<br>2) Pega abajo el código que él te devuelva y pulsa Conectar.','Conectar',()=>{const v=$('manIn').value.trim();if(!v)return toast('Pega el código del anfitrión');man.apply&&man.apply(v)});
+  $('manOut').value='Generando…';$('manGo').disabled=true;
+  enter(false,'MANUAL',man);
+};
+async function hostManual(osdp){
+  const id='man-'+rand(),pc=new RTCPeerConnection(ICE),g={pc,dc:null,name:'Invitado',cand:[],open:false,sdp:osdp,ans:''};
+  guests.set(id,g);
+  pc.onconnectionstatechange=()=>{dlog('anfitrión (manual): conexión '+pc.connectionState);if(pc.connectionState==='failed'||pc.connectionState==='closed')dropGuest(id)};
+  pc.ondatachannel=e=>{g.dc=e.channel;e.channel.onopen=()=>{g.open=true;dlog('anfitrión (manual): canal abierto')};e.channel.onmessage=ev=>{let m;try{m=JSON.parse(ev.data)}catch(x){return}onGuestMsg(id,g,m)};e.channel.onclose=()=>dropGuest(id)};
+  await pc.setRemoteDescription({type:'offer',sdp:osdp});
+  const tr=pc.getTransceivers().find(t=>t.receiver.track&&t.receiver.track.kind==='audio');
+  await tr.sender.replaceTrack(dest.stream.getAudioTracks()[0]);tr.direction='sendonly';
+  const ans=await pc.createAnswer();ans.sdp=munge(ans.sdp);await pc.setLocalDescription(ans);
+  await gathered(pc);
+  [800,3000].forEach(ms=>setTimeout(async()=>{try{const sd=tr.sender,pr=sd.getParameters();if(!pr.encodings||!pr.encodings.length)pr.encodings=[{}];pr.encodings[0].maxBitrate=256000;await sd.setParameters(pr)}catch(e){}},ms));
+  return pc.localDescription.sdp;
+}
+$('manH').onclick=()=>{
+  if(!me.host)return;
+  manShow('Añadir invitado manualmente','1) Pega abajo el código que te envió el invitado y pulsa Generar.<br>2) Copia <b>mi código</b> y envíaselo de vuelta. Mantén esta pantalla abierta.','Generar',async()=>{
+    const v=$('manIn').value.trim();if(!v)return toast('Pega el código del invitado');
+    $('manGo').disabled=true;
+    try{$('manOut').value=btoa(await hostManual(atob(v.replace(/\s+/g,''))));toast('Listo: copia mi código y envíaselo')}
+    catch(e){toast('Código no válido');dlog('manual: '+(e&&e.message||e))}
+    $('manGo').disabled=false;
+  });
+};
 renderPP();
 window.addEventListener('pagehide',()=>{if(me.host)bcast({t:'bye'})});
 </script>
