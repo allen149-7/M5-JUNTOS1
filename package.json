@@ -1,0 +1,9 @@
+{
+  "name": "m5-signal",
+  "version": "1.0.0",
+  "description": "Servidor de señalización (PeerServer) para M5 Juntos",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" },
+  "dependencies": { "peer": "^1.0.2" },
+  "engines": { "node": ">=18" }
+}
